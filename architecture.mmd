@@ -1,0 +1,93 @@
+graph TD
+    subgraph Client Application (Web/Other)
+        A[REST API Calls] -- HTTP/S --> B(ProducerController)
+    end
+
+    subgraph Spring Boot Application
+        direction LR
+
+        subgraph Producers
+            B --> C(KafkaProducerService)
+            C -- Configured by --> D(KafkaProducerConfig)
+            D -- Reads from DB --> F
+            C -- Produces Messages --> G(Kafka Broker)
+        end
+
+        subgraph Consumers
+            G -- Consumes Messages --> H(KafkaConsumerService)
+            H -- Configured by --> I(KafkaConsumerConfig)
+            I -- Reads from DB --> E
+            I -- Spawns/Manages --> J(Dynamic Kafka Listeners)
+            J -- Delivers messages to --> H
+        end
+
+        subgraph Database (PostgreSQL)
+            direction TD
+            E[kafka_consumer_config Table]
+            F[kafka_producer_config Table]
+            K[kafka_common_properties Table]
+            L[cders_crd_consumer_data Table]
+        end
+
+        subgraph Core Services & Config
+            K -- Loaded by --> M(KafkaConfigLoader)
+            M -- Provides common props to --> D & I
+            H -- Inserts to --> L
+            H -- Calls --> N(PostgresProcessorService)
+            N -- Executes Function --> L
+        end
+
+        subgraph Spring Boot Lifecycle
+            O(ApplicationReadyEvent) -- Triggers --> P(ApplicationReadyEventConsumerStarter)
+            P -- Uses --> I & H
+        end
+    end
+
+    style A fill:#D9E8F5,stroke:#333,stroke-width:2px
+    style B fill:#E6F3F7,stroke:#333,stroke-width:2px
+    style C fill:#E6F3F7,stroke:#333,stroke-width:2px
+    style D fill:#F5E8D9,stroke:#333,stroke-width:2px
+    style E fill:#D9F5E8,stroke:#333,stroke-width:2px
+    style F fill:#D9F5E8,stroke:#333,stroke-width:2px
+    style G fill:#FFDDC1,stroke:#333,stroke-width:2px
+    style H fill:#E6F3F7,stroke:#333,stroke-width:2px
+    style I fill:#F5E8D9,stroke:#333,stroke-width:2px
+    style J fill:#F0F8FF,stroke:#333,stroke-width:2px
+    style K fill:#D9F5E8,stroke:#333,stroke-width:2px
+    style L fill:#D9F5E8,stroke:#333,stroke-width:2px
+    style M fill:#F5E8D9,stroke:#333,stroke-width:2px
+    style N fill:#E6F3F7,stroke:#333,stroke-width:2px
+    style O fill:#F0F0F0,stroke:#333,stroke-width:2px
+    style P fill:#F0F8FF,stroke:#333,stroke-width:2px
+
+    subgraph Key Interaction Flows
+        subgraph Producer Flow
+            A --&gt; B
+            B --&gt; C
+            C --&gt; G
+        end
+
+        subgraph Consumer Flow
+            G --&gt; J
+            J --&gt; H
+            H --&gt; L
+            H --&gt; N
+            N --&gt; L
+        end
+
+        subgraph Configuration Flow
+            K --&gt; M
+            M --&gt; D
+            M --&gt; I
+            E --&gt; I
+            F --&gt; D
+        end
+
+        subgraph Dynamic Consumer Startup Flow
+            O --&gt; P
+            P --&gt; I
+            P --&gt; H
+            P --&gt; J
+            P --&gt; E
+        end
+    end
