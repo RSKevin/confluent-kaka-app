@@ -1,0 +1,1037 @@
+//schema.sql 
+-- Drop tables in reverse order of foreign key dependencies
+DROP TABLE IF EXISTS kafka_producer_config;
+DROP TABLE IF EXISTS kafka_consumer_config;
+DROP TABLE IF EXISTS kafka_common_properties;
+DROP TABLE IF EXISTS kafka_cluster_config;
+DROP TABLE IF EXISTS cders_crd_consumer_data;
+
+-- Drop function if it exists
+DROP FUNCTION IF EXISTS proocess_cders_crd(BIGINT);
+
+
+-- Table for application-wide common Kafka properties
+CREATE TABLE kafka_common_properties (
+    id SERIAL PRIMARY KEY,
+    property_key VARCHAR(255) UNIQUE NOT NULL,
+    property_value TEXT
+);
+
+-- Table for Kafka Cluster specific configurations (bootstrap servers, security, etc.)
+CREATE TABLE kafka_cluster_config (
+    id SERIAL PRIMARY KEY,
+    cluster_name VARCHAR(255) UNIQUE NOT NULL,
+    bootstrap_servers TEXT NOT NULL,
+    distribution_type VARCHAR(50) NOT NULL DEFAULT 'APACHE_KAFKA', -- e.g., 'CONFLUENT_KAFKA', 'EDF_KAFKA'
+    security_protocol VARCHAR(50) DEFAULT 'PLAINTEXT',             -- e.g., 'SSL', 'SASL_PLAINTEXT', 'SASL_SSL'
+    ssl_truststore_location TEXT,
+    ssl_truststore_password TEXT,
+    ssl_keystore_location TEXT,   -- For client authentication via SSL
+    ssl_keystore_password TEXT,   -- Password for keystore
+    sasl_mechanism VARCHAR(50),   -- e.g., 'PLAIN', 'SCRAM-SHA-256'
+    sasl_jaas_config TEXT,        -- JAAS configuration string
+    schema_registry_url TEXT,     -- For Confluent Schema Registry (if using Avro/Protobuf)
+    enabled BOOLEAN DEFAULT TRUE
+);
+
+-- Table for Producer Topic specific configurations
+CREATE TABLE kafka_producer_config (
+    id SERIAL PRIMARY KEY,
+    topic_name VARCHAR(255) UNIQUE NOT NULL,
+    client_id VARCHAR(255),
+    acks VARCHAR(10) DEFAULT 'all',
+    retries INT DEFAULT 0,
+    batch_size INT DEFAULT 16384,
+    linger_ms INT DEFAULT 1,
+    buffer_memory BIGINT DEFAULT 33554432,
+    enabled BOOLEAN DEFAULT TRUE,
+    cluster_id INT,
+    CONSTRAINT fk_producer_cluster
+        FOREIGN KEY (cluster_id)
+        REFERENCES kafka_cluster_config (id)
+        ON DELETE RESTRICT
+);
+
+-- Table for Consumer Topic specific configurations
+CREATE TABLE kafka_consumer_config (
+    id SERIAL PRIMARY KEY,
+    topic_name VARCHAR(255) UNIQUE NOT NULL,
+    group_id VARCHAR(255) NOT NULL,
+    table_name VARCHAR(255) NOT NULL,  -- Table to insert data into
+    function_name VARCHAR(255) NOT NULL, -- PostgreSQL function to call after insert
+    enabled BOOLEAN DEFAULT TRUE,
+    cluster_id INT,
+    CONSTRAINT fk_consumer_cluster
+        FOREIGN KEY (cluster_id)
+        REFERENCES kafka_cluster_config (id)
+        ON DELETE RESTRICT
+);
+
+-- Table for consumer message storage
+CREATE TABLE cders_crd_consumer_data (
+    msg_id BIGSERIAL PRIMARY KEY,
+    json_data JSONB NOT NULL,
+    created_ts TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_ts TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- PostgreSQL stored function to process consumer data
+-- This is a placeholder. Replace with your actual processing logic.
+CREATE OR REPLACE FUNCTION proocess_cders_crd(p_msg_id BIGINT)
+RETURNS VOID AS $$
+BEGIN
+    RAISE NOTICE 'Processing message ID: % from cders_crd_consumer_data table', p_msg_id;
+    -- Example: You might update a status, trigger another process, etc.
+    -- UPDATE cders_crd_consumer_data SET status = 'PROCESSED' WHERE msg_id = p_msg_id;
+END;
+$$ LANGUAGE plpgsql;
+
+
+
+//insert_data.sql
+-- 1. Sample data for kafka_common_properties table
+INSERT INTO kafka_common_properties (property_key, property_value) VALUES
+('client.id', 'my-spring-kafka-app'),
+('request.timeout.ms', '30000'),
+('session.timeout.ms', '10000'),
+('max.poll.records', '500'),  -- Example common consumer property
+('max.poll.interval.ms', '300000'); -- Example common consumer property
+
+
+-- 2. Insert data for kafka_cluster_config table (two distinct clusters)
+
+-- Cluster 1: For 'MyEDFTopic' (SASL_SSL, SCRAM-SHA-256, Truststore, Schema Registry)
+INSERT INTO kafka_cluster_config (
+    cluster_name,
+    bootstrap_servers,
+    distribution_type,
+    security_protocol,
+    sasl_mechanism,
+    sasl_jaas_config,
+    ssl_truststore_location,
+    ssl_truststore_password,
+    schema_registry_url,
+    enabled
+) VALUES (
+    'EDF_PaaS_Cluster',
+    'abcd01.paas.net:9092,abcd02.paas.net:9092',
+    'CONFLUENT_KAFKA', -- Based on schema.registry.url presence
+    'SASL_SSL',
+    'SCRAM-SHA-256',
+    'org.apache.kafka.common.security.scram.ScramLoginModule required username="myuser" password="mypassword";',
+    '/jks/abcd.truststore.jks',
+    'myPassw0rd',
+    'https://abcsddh.com:8081',
+    TRUE
+);
+
+-- Cluster 2: For 'account-details', 'account-response', 'account-mapping' (SSL, Truststore, Keystore, Schema Registry)
+INSERT INTO kafka_cluster_config (
+    cluster_name,
+    bootstrap_servers,
+    distribution_type,
+    security_protocol,
+    ssl_truststore_location,
+    ssl_truststore_password,
+    ssl_keystore_location,
+    ssl_keystore_password,
+    schema_registry_url,
+    enabled
+) VALUES (
+    'Confluent_PaaS_Cluster',
+    'xyz01.paas.net:9094,xyz02.paas.net:9094',
+    'CONFLUENT_KAFKA',
+    'SSL',
+    '/jks/xyzq1234.com.jks',
+    'myYusbPsw0rd',
+    '/jks/abcd_keystore_non_prod.jks',
+    'k395tt0re',
+    'https://dvdhdh.com:9083',
+    TRUE
+);
+
+-- 3. Insert data for kafka_producer_config
+-- 'account-mapping' topic for the Confluent_PaaS_Cluster
+INSERT INTO kafka_producer_config (topic_name, client_id, acks, retries, enabled, cluster_id) VALUES
+('account-mapping', 'account-mapper-producer', 'all', 3, TRUE, (SELECT id FROM kafka_cluster_config WHERE cluster_name = 'Confluent_PaaS_Cluster'));
+
+
+-- 4. Insert data for kafka_consumer_config
+
+-- Consumer 1: 'MyEDFTopic' for the EDF_PaaS_Cluster (SASL_SSL)
+INSERT INTO kafka_consumer_config (topic_name, group_id, table_name, function_name, enabled, cluster_id) VALUES
+('MyEDFTopic', 'consumer-dev', 'cders_crd_consumer_data', 'proocess_cders_crd', TRUE, (SELECT id FROM kafka_cluster_config WHERE cluster_name = 'EDF_PaaS_Cluster'));
+
+-- Consumer 2: 'account-details' for the Confluent_PaaS_Cluster (SSL with Keystore)
+INSERT INTO kafka_consumer_config (topic_name, group_id, table_name, function_name, enabled, cluster_id) VALUES
+('account-details', 'crd_cders_group', 'cders_crd_consumer_data', 'proocess_cders_crd', TRUE, (SELECT id FROM kafka_cluster_config WHERE cluster_name = 'Confluent_PaaS_Cluster'));
+
+-- Consumer 3: 'account-response' for the Confluent_PaaS_Cluster (SSL with Keystore)
+INSERT INTO kafka_consumer_config (topic_name, group_id, table_name, function_name, enabled, cluster_id) VALUES
+('account-response', 'crd_cders_group', 'cders_crd_consumer_data', 'proocess_cders_crd', TRUE, (SELECT id FROM kafka_cluster_config WHERE cluster_name = 'Confluent_PaaS_Cluster'));
+
+-- Add a disabled consumer for demonstration of dynamic enabling/disabling
+INSERT INTO kafka_consumer_config (topic_name, group_id, table_name, function_name, enabled, cluster_id) VALUES
+('new.dynamic.topic', 'dynamic-group', 'cders_crd_consumer_data', 'proocess_cders_crd', FALSE, (SELECT id FROM kafka_cluster_config WHERE cluster_name = 'EDF_PaaS_Cluster'));
+
+
+
+//pom.xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.6</version> <relativePath/> </parent>
+    <groupId>com.example</groupId>
+    <artifactId>kafka-app</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <name>kafka-app</name>
+    <description>Dynamic Kafka Configuration Application</description>
+
+    <properties>
+        <java.version>17</java.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</
+            artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            artifactId>spring-kafka</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            artifactId>spring-kafka-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.confluent</groupId>
+            <artifactId>kafka-schema-registry-client</artifactId>
+            <version>7.6.0</version> </dependency>
+        <dependency>
+            <groupId>io.confluent</groupId>
+            <artifactId>kafka-streams-avro-serde</artifactId>
+            <version>7.6.0</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.kafka</groupId>
+                    <artifactId>kafka-streams</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <excludes>
+                        <exclude>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                        </exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <repositories>
+        <repository>
+            <id>confluent</id>
+            <url>https://packages.confluent.io/maven/</url>
+        </repository>
+    </repositories>
+
+</project>
+
+
+//src/main/resources/application.properties
+spring.datasource.url=jdbc:postgresql://localhost:5432/your_database
+spring.datasource.username=your_username
+spring.datasource.password=your_password
+spring.datasource.driver-class-name=org.postgresql.Driver
+spring.jpa.hibernate.ddl-auto=none # Set to 'update' for initial schema generation, then 'none' or 'validate'
+spring.jpa.show-sql=true
+spring.jpa.properties.hibernate.format_sql=true
+
+# Spring Kafka auto-configuration disabled, as we manage it manually
+spring.kafka.consumer.auto-startup=false
+spring.kafka.producer.enabled=false
+
+
+//KafkaAppApplication.java
+package com.example.kafkaapp;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
+import org.springframework.kafka.annotation.EnableKafka;
+import org.springframework.scheduling.annotation.EnableScheduling; // Enable scheduling for optional future use
+
+@SpringBootApplication
+@EnableJpaRepositories(basePackages = "com.example.kafkaapp.repository")
+@EnableKafka // Although consumers are dynamic, this is good practice
+@EnableScheduling // If you decide to use scheduled refresh later
+public class KafkaAppApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(KafkaAppApplication.class, args);
+    }
+
+}
+
+
+package com.example.kafkaapp.model;
+
+import jakarta.persistence.*;
+import lombok.Data;
+
+@Entity
+@Table(name = "kafka_common_properties")
+@Data
+public class KafkaCommonPropertiesEntity {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    private String propertyKey;
+    private String propertyValue;
+}
+
+
+package com.example.kafkaapp.model;
+
+import jakarta.persistence.*;
+import lombok.Data;
+
+import java.util.HashMap;
+import java.util.Map;
+import static org.apache.kafka.clients.CommonClientConfigs.*;
+import static org.apache.kafka.common.config.SaslConfigs;
+import static org.apache.kafka.common.config.SslConfigs;
+// Import for Confluent Schema Registry property
+import static io.confluent.kafka.serializers.AbstractKafkaSchemaSerDeConfig.SCHEMA_REGISTRY_URL_CONFIG;
+
+@Entity
+@Table(name = "kafka_cluster_config")
+@Data
+public class KafkaClusterConfigEntity {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    private String clusterName;
+    private String bootstrapServers;
+    private String distributionType; // e.g., 'CONFLUENT_KAFKA', 'APACHE_KAFKA'
+    private String securityProtocol;
+    private String sslTruststoreLocation;
+    private String sslTruststorePassword;
+    private String sslKeystoreLocation;   // NEW FIELD
+    private String sslKeystorePassword;   // NEW FIELD
+    private String saslMechanism;
+    private String saslJaasConfig;
+    private String schemaRegistryUrl;     // NEW FIELD: For Confluent Schema Registry
+    private boolean enabled;
+
+    // Helper to convert to a Map<String, Object> for Kafka properties
+    public Map<String, Object> toKafkaPropertiesMap() {
+        Map<String, Object> props = new HashMap<>();
+        props.put(BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+
+        if (securityProtocol != null && !securityProtocol.isEmpty() && !securityProtocol.equalsIgnoreCase("PLAINTEXT")) {
+            props.put(SECURITY_PROTOCOL_CONFIG, securityProtocol);
+        }
+
+        // SSL Truststore properties
+        if (sslTruststoreLocation != null && !sslTruststoreLocation.isEmpty()) {
+            props.put(SslConfigs.SSL_TRUSTSTORE_LOCATION_CONFIG, sslTruststoreLocation);
+            if (sslTruststorePassword != null) {
+                props.put(SslConfigs.SSL_TRUSTSTORE_PASSWORD_CONFIG, sslTruststorePassword);
+            }
+        }
+
+        // SSL Keystore properties (for client authentication)
+        if (sslKeystoreLocation != null && !sslKeystoreLocation.isEmpty()) {
+            props.put(SslConfigs.SSL_KEYSTORE_LOCATION_CONFIG, sslKeystoreLocation);
+            if (sslKeystorePassword != null) {
+                props.put(SslConfigs.SSL_KEYSTORE_PASSWORD_CONFIG, sslKeystorePassword);
+            }
+        }
+
+        // SASL properties
+        if (saslMechanism != null && !saslMechanism.isEmpty()) {
+            props.put(SaslConfigs.SASL_MECHANISM, saslMechanism);
+            if (saslJaasConfig != null) {
+                props.put(SaslConfigs.SASL_JAAS_CONFIG, saslJaasConfig);
+            }
+        }
+
+        // Schema Registry URL (Confluent specific)
+        if (schemaRegistryUrl != null && !schemaRegistryUrl.isEmpty()) {
+            props.put(SCHEMA_REGISTRY_URL_CONFIG, schemaRegistryUrl);
+        }
+
+        return props;
+    }
+}
+
+
+package com.example.kafkaapp.model;
+
+import jakarta.persistence.*;
+import lombok.Data;
+
+@Entity
+@Table(name = "kafka_producer_config")
+@Data
+public class KafkaProducerConfigEntity {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    private String topicName;
+    private String clientId;
+    private String acks;
+    private Integer retries;
+    private Integer batchSize;
+    private Integer lingerMs;
+    private Long bufferMemory;
+    private boolean enabled;
+
+    @Column(name = "cluster_id")
+    private Long clusterId; // Foreign key to kafka_cluster_config
+}
+
+
+package com.example.kafkaapp.model;
+
+import jakarta.persistence.*;
+import lombok.Data;
+
+@Entity
+@Table(name = "kafka_consumer_config")
+@Data
+public class KafkaConsumerConfigEntity {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    private String topicName;
+    private String groupId;
+    private String tableName;
+    private String functionName;
+    private boolean enabled;
+
+    @Column(name = "cluster_id")
+    private Long clusterId; // Foreign key to kafka_cluster_config
+}
+
+
+package com.example.kafkaapp.model;
+
+import jakarta.persistence.*;
+import lombok.Data;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+
+import java.time.OffsetDateTime;
+
+@Entity
+@Table(name = "cders_crd_consumer_data")
+@Data
+public class CdersCrdConsumerData {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Column(name = "msg_id")
+    private Long msgId;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "json_data", columnDefinition = "jsonb")
+    private String jsonData; // Storing as String, let JPA/DB handle JSONB
+
+    @Column(name = "created_ts")
+    private OffsetDateTime createdTs;
+
+    @Column(name = "updated_ts")
+    private OffsetDateTime updatedTs;
+
+    @PrePersist
+    protected void onCreate() {
+        createdTs = OffsetDateTime.now();
+        updatedTs = OffsetDateTime.now();
+    }
+
+    @PreUpdate
+    protected void onUpdate() {
+        updatedTs = OffsetDateTime.now();
+    }
+}
+
+
+package com.example.kafkaapp.repository;
+
+import com.example.kafkaapp.model.KafkaCommonPropertiesEntity;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+public interface KafkaCommonPropertiesRepository extends JpaRepository<KafkaCommonPropertiesEntity, Long> {
+}
+
+package com.example.kafkaapp.repository;
+
+import com.example.kafkaapp.model.KafkaClusterConfigEntity;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+public interface KafkaClusterConfigRepository extends JpaRepository<KafkaClusterConfigEntity, Long> {
+}
+
+package com.example.kafkaapp.repository;
+
+import com.example.kafkaapp.model.KafkaProducerConfigEntity;
+import org.springframework.data.jpa.repository.JpaRepository;
+import java.util.Optional;
+
+public interface KafkaProducerConfigRepository extends JpaRepository<KafkaProducerConfigEntity, Long> {
+    Optional<KafkaProducerConfigEntity> findByTopicName(String topicName);
+}
+
+
+package com.example.kafkaapp.repository;
+
+import com.example.kafkaapp.model.KafkaConsumerConfigEntity;
+import org.springframework.data.jpa.repository.JpaRepository;
+import java.util.List;
+
+public interface KafkaConsumerConfigRepository extends JpaRepository<KafkaConsumerConfigEntity, Long> {
+    List<KafkaConsumerConfigEntity> findByEnabledTrue();
+}
+
+package com.example.kafkaapp.config;
+
+import com.example.kafkaapp.model.KafkaClusterConfigEntity;
+import com.example.kafkaapp.repository.KafkaCommonPropertiesRepository;
+import com.example.kafkaapp.repository.KafkaClusterConfigRepository;
+import jakarta.annotation.PostConstruct;
+import lombok.Getter;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Optional;
+import java.util.stream.Collectors;
+
+@Component
+@RequiredArgsConstructor
+@Slf4j
+public class KafkaConfigLoader {
+
+    private final KafkaCommonPropertiesRepository commonPropertiesRepository;
+    private final KafkaClusterConfigRepository clusterConfigRepository;
+
+    @Getter
+    private Map<String, Object> commonKafkaProperties; // General properties not specific to a cluster
+    @Getter
+    private Map<Long, KafkaClusterConfigEntity> kafkaClusterConfigs; // Cluster-specific properties
+
+    @PostConstruct
+    public void loadAllKafkaConfigurations() {
+        log.info("Loading Kafka configurations from database...");
+
+        // Load common properties (e.g., client.id, request.timeout.ms)
+        commonKafkaProperties = new HashMap<>();
+        commonPropertiesRepository.findAll().forEach(prop -> {
+            commonKafkaProperties.put(prop.getPropertyKey(), prop.getPropertyValue());
+            log.debug("Loaded common Kafka property: {} = {}", prop.getPropertyKey(), prop.getPropertyValue());
+        });
+
+        // Load cluster-specific properties
+        kafkaClusterConfigs = clusterConfigRepository.findAll().stream()
+                .collect(Collectors.toMap(KafkaClusterConfigEntity::getId, cluster -> cluster));
+
+        log.info("Finished loading Kafka configurations. Common props count: {}, Cluster configs count: {}",
+                commonKafkaProperties.size(), kafkaClusterConfigs.size());
+    }
+
+    public Optional<KafkaClusterConfigEntity> getClusterConfig(Long clusterId) {
+        return Optional.ofNullable(kafkaClusterConfigs.get(clusterId));
+    }
+}
+
+package com.example.kafkaapp.config;
+
+import com.example.kafkaapp.model.KafkaProducerConfigEntity;
+import com.example.kafkaapp.model.KafkaClusterConfigEntity;
+import com.example.kafkaapp.repository.KafkaProducerConfigRepository;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.common.serialization.StringSerializer;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.core.DefaultKafkaProducerFactory;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.core.ProducerFactory;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+@Configuration
+@RequiredArgsConstructor
+@Slf4j
+public class KafkaProducerConfig {
+
+    private final KafkaConfigLoader kafkaConfigLoader;
+    private final KafkaProducerConfigRepository kafkaProducerConfigRepository;
+
+    // Cache for KafkaTemplate instances, keyed by cluster_id
+    private final Map<Long, KafkaTemplate<String, String>> kafkaTemplatesByCluster = new ConcurrentHashMap<>();
+
+    public KafkaTemplate<String, String> getKafkaTemplateForTopic(String topicName) {
+        KafkaProducerConfigEntity producerConfig = kafkaProducerConfigRepository.findByTopicName(topicName)
+                .orElseThrow(() -> new IllegalArgumentException("No producer configuration found for topic: " + topicName));
+
+        if (!producerConfig.isEnabled()) {
+            throw new IllegalStateException("Producer for topic " + topicName + " is disabled.");
+        }
+
+        Long clusterId = producerConfig.getClusterId();
+        if (clusterId == null) {
+             throw new IllegalStateException("Producer topic " + topicName + " has no associated cluster ID.");
+        }
+
+        return kafkaTemplatesByCluster.computeIfAbsent(clusterId, id -> {
+            log.info("Creating new KafkaTemplate for cluster ID: {} (topic: {})", id, topicName);
+            return createKafkaTemplateForCluster(id, producerConfig);
+        });
+    }
+
+    private KafkaTemplate<String, String> createKafkaTemplateForCluster(Long clusterId, KafkaProducerConfigEntity producerConfig) {
+        KafkaClusterConfigEntity clusterConfig = kafkaConfigLoader.getClusterConfig(clusterId)
+                .orElseThrow(() -> new IllegalArgumentException("Kafka Cluster configuration not found for ID: " + clusterId));
+
+        Map<String, Object> producerProps = new HashMap<>();
+
+        // 1. Add common application-wide Kafka properties
+        producerProps.putAll(kafkaConfigLoader.getCommonKafkaProperties());
+
+        // 2. Add cluster-specific properties (bootstrap.servers, security, schema.registry.url)
+        producerProps.putAll(clusterConfig.toKafkaPropertiesMap());
+
+        // 3. Add producer-specific properties for this topic
+        producerProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+        producerProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+        producerProps.put(ProducerConfig.ACKS_CONFIG, producerConfig.getAcks());
+        producerProps.put(ProducerConfig.RETRIES_CONFIG, producerConfig.getRetries());
+        producerProps.put(ProducerConfig.BATCH_SIZE_CONFIG, producerConfig.getBatchSize());
+        producerProps.put(ProducerConfig.LINGER_MS_CONFIG, producerConfig.getLingerMs());
+        producerProps.put(ProducerConfig.BUFFER_MEMORY_CONFIG, producerConfig.getBufferMemory());
+        if (producerConfig.getClientId() != null) {
+            producerProps.put(ProducerConfig.CLIENT_ID_CONFIG, producerConfig.getClientId());
+        }
+
+        log.info("Producer properties for topic {} (Cluster: {}, Distribution: {}): {}",
+                 producerConfig.getTopicName(), clusterConfig.getClusterName(), clusterConfig.getDistributionType(), producerProps);
+        ProducerFactory<String, String> producerFactory = new DefaultKafkaProducerFactory<>(producerProps);
+        return new KafkaTemplate<>(producerFactory);
+    }
+}
+
+package com.example.kafkaapp.config;
+
+import com.example.kafkaapp.model.KafkaConsumerConfigEntity;
+import com.example.kafkaapp.model.KafkaClusterConfigEntity;
+import com.example.kafkaapp.repository.KafkaConsumerConfigRepository;
+import com.example.kafkaapp.service.KafkaConsumerService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.common.serialization.StringDeserializer;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
+import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.listener.ContainerProperties;
+import org.springframework.kafka.listener.KafkaMessageListenerContainer;
+import org.springframework.kafka.listener.MessageListener;
+import org.springframework.stereotype.Component;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+@Component
+@RequiredArgsConstructor
+@Slf4j
+public class ApplicationReadyEventConsumerStarter {
+
+    private final KafkaConsumerService kafkaConsumerService;
+    private final KafkaConsumerConfigRepository kafkaConsumerConfigRepository;
+    private final KafkaConfigLoader kafkaConfigLoader;
+
+    // Map to keep track of running KafkaMessageListenerContainers by topic name
+    private final Map<String, KafkaMessageListenerContainer<String, String>> runningContainers = new ConcurrentHashMap<>();
+
+    @EventListener(ApplicationReadyEvent.class)
+    public void startDynamicConsumersOnApplicationReady() {
+        log.info("Application is ready. Starting initial dynamic Kafka consumers...");
+        refreshDynamicConsumers(); // Call refresh on startup
+        log.info("Initial dynamic Kafka consumers started. Total: {}", runningContainers.size());
+    }
+
+    /**
+     * Refreshes the active Kafka consumer listeners based on the latest configurations in the database.
+     * This method can be called dynamically via an admin endpoint.
+     * It will:
+     * 1. Stop any consumers that are no longer enabled or exist in the database.
+     * 2. Start any new consumers that are enabled in the database but not currently running.
+     * 3. (Optional future enhancement) Reconfigure and restart consumers whose properties have changed.
+     */
+    public synchronized void refreshDynamicConsumers() {
+        log.info("Refreshing dynamic Kafka consumers from database...");
+
+        // Get the latest enabled configurations from the database
+        List<KafkaConsumerConfigEntity> currentDbConfigs = kafkaConsumerConfigRepository.findByEnabledTrue();
+        Map<String, KafkaConsumerConfigEntity> newConfigMap = new HashMap<>();
+        currentDbConfigs.forEach(config -> newConfigMap.put(config.getTopicName(), config));
+
+        // --- Step 1: Stop and remove consumers that are no longer configured or enabled ---
+        runningContainers.entrySet().removeIf(entry -> {
+            String topicName = entry.getKey();
+            KafkaConsumerConfigEntity newConfig = newConfigMap.get(topicName);
+
+            // If config is null or disabled, stop the container
+            if (newConfig == null || !newConfig.isEnabled()) {
+                log.info("Stopping consumer for topic: {} (no longer configured or disabled)", topicName);
+                entry.getValue().stop();
+                return true; // Remove from map
+            }
+            // Add more sophisticated logic here if you want to detect config changes
+            // For now, if config exists and is enabled, we assume it's still good.
+            return false;
+        });
+
+        // --- Step 2: Start new consumers or re-start existing ones whose configs changed (or were previously disabled) ---
+        for (KafkaConsumerConfigEntity config : currentDbConfigs) {
+            if (config.isEnabled()) {
+                if (!runningContainers.containsKey(config.getTopicName())) {
+                    // This is a new consumer or one that was previously stopped
+                    startConsumer(config);
+                } else {
+                    // Consumer is already running. You might add logic here to check if its
+                    // effective configuration has changed (e.g., cluster_id, group_id etc.)
+                    // and if so, stop and restart it. This is more complex and depends on
+                    // what changes require a restart. For simplicity, we assume if it's
+                    // running and enabled, it's fine unless explicitly removed/disabled.
+                    log.debug("Consumer for topic {} is already running.", config.getTopicName());
+                }
+            }
+        }
+        log.info("Dynamic Kafka consumers refreshed. Total running: {}", runningContainers.size());
+    }
+
+
+    private void startConsumer(KafkaConsumerConfigEntity config) {
+        try {
+            log.info("Starting consumer for topic: {} with group_id: {}", config.getTopicName(), config.getGroupId());
+
+            Long clusterId = config.getClusterId();
+            if (clusterId == null) {
+                log.error("Consumer topic {} has no associated cluster ID. Skipping.", config.getTopicName());
+                return;
+            }
+
+            KafkaClusterConfigEntity clusterConfig = kafkaConfigLoader.getClusterConfig(clusterId)
+                    .orElseThrow(() -> new IllegalArgumentException("Kafka Cluster configuration not found for ID: " + clusterId + " for topic " + config.getTopicName()));
+
+            // Build consumer properties for THIS specific consumer
+            Map<String, Object> consumerProps = new HashMap<>();
+            // 1. Add common properties from kafka_common_properties
+            consumerProps.putAll(kafkaConfigLoader.getCommonKafkaProperties());
+            // 2. Add cluster-specific properties (bootstrap.servers, security, schema.registry.url)
+            consumerProps.putAll(clusterConfig.toKafkaPropertiesMap());
+            // 3. Add consumer-specific properties for this topic/group
+            consumerProps.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+            consumerProps.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+            consumerProps.put(ConsumerConfig.GROUP_ID_CONFIG, config.getGroupId());
+            consumerProps.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest"); // Always start from earliest for new consumers
+            consumerProps.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false"); // Manual acknowledgement
+
+            // Generate a unique client ID for each consumer instance for better monitoring
+            consumerProps.put(ConsumerConfig.CLIENT_ID_CONFIG,
+                "dynamic-consumer-" + config.getTopicName() + "-" + config.getGroupId() + "-id" + System.currentTimeMillis());
+
+            // Create a dedicated ConsumerFactory for this listener (crucial for different bootstrap.servers/security)
+            DefaultKafkaConsumerFactory<String, String> individualConsumerFactory =
+                    new DefaultKafkaConsumerFactory<>(consumerProps);
+
+            ContainerProperties containerProps = new ContainerProperties(config.getTopicName());
+            containerProps.setAckMode(ContainerProperties.AckMode.RECORD); // Acknowledge record by record
+            containerProps.setMessageListener((MessageListener<String, String>) data -> {
+                log.debug("Received message from topic: {}, partition: {}, offset: {}", data.topic(), data.partition(), data.offset());
+                kafkaConsumerService.processMessage(data.value(), config); // Process the message
+            });
+
+            KafkaMessageListenerContainer<String, String> container =
+                    new KafkaMessageListenerContainer<>(individualConsumerFactory, containerProps);
+
+            // Give the container a unique bean name for Spring's context (useful for monitoring/management)
+            container.setBeanName("dynamicConsumer-" + config.getTopicName() + "-" + config.getGroupId());
+            container.start(); // Start the consumer container
+            runningContainers.put(config.getTopicName(), container); // Add to map of running containers
+            log.info("Successfully started consumer for topic: {} (Cluster: {}, Distribution: {}) with group_id: {}",
+                     config.getTopicName(), clusterConfig.getClusterName(), clusterConfig.getDistributionType(), config.getGroupId());
+        } catch (Exception e) {
+            log.error("Failed to start consumer for topic {}: {}", config.getTopicName(), e.getMessage(), e);
+            if (e.getCause() != null) {
+                log.error("Root cause: {}", e.getCause().getMessage());
+            }
+        }
+    }
+
+    /**
+     * Stops all running Kafka listener containers gracefully when the application context is closing.
+     */
+    @PreDestroy
+    public void stopAllConsumers() {
+        log.info("Shutting down all dynamic Kafka consumers...");
+        runningContainers.values().forEach(container -> {
+            log.info("Stopping consumer for topic: {}", container.getContainerProperties().getTopics()[0]);
+            container.stop();
+        });
+        runningContainers.clear();
+        log.info("All dynamic Kafka consumers stopped.");
+    }
+}
+
+package com.example.kafkaapp.service;
+
+import com.example.kafkaapp.model.KafkaConsumerConfigEntity;
+import com.example.kafkaapp.model.CdersCrdConsumerData;
+import com.example.kafkaapp.repository.CdersCrdConsumerDataRepository;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class KafkaConsumerService {
+
+    private final CdersCrdConsumerDataRepository cdersCrdConsumerDataRepository;
+    private final PostgresProcessorService postgresProcessorService; // To call the DB function
+    private final ObjectMapper objectMapper; // For JSON parsing
+
+    @Transactional // Ensure atomicity for saving data and calling DB function
+    public void processMessage(String message, KafkaConsumerConfigEntity consumerConfig) {
+        log.info("Processing message from topic: {} with group_id: {}", consumerConfig.getTopicName(), consumerConfig.getGroupId());
+        log.debug("Message content: {}", message);
+
+        try {
+            // Validate if the message is valid JSON (assuming json_data column is JSONB)
+            objectMapper.readTree(message);
+
+            CdersCrdConsumerData consumerData = new CdersCrdConsumerData();
+            consumerData.setJsonData(message); // Store as string, JPA will convert to JSONB
+
+            // Save the raw message to the configured table
+            // In a real app, you'd likely use a dynamic repository based on consumerConfig.getTableName()
+            // For this example, we assume cders_crd_consumer_data is the only target table.
+            CdersCrdConsumerData savedData = cdersCrdConsumerDataRepository.save(consumerData);
+            log.info("Message from topic {} saved to table {} with msg_id: {}",
+                     consumerConfig.getTopicName(), consumerConfig.getTableName(), savedData.getMsgId());
+
+            // Call the PostgreSQL stored function
+            postgresProcessorService.callStoredFunction(
+                consumerConfig.getFunctionName(), savedData.getMsgId());
+
+        } catch (JsonProcessingException e) {
+            log.error("Invalid JSON message received for topic {}. Message: {}. Error: {}",
+                      consumerConfig.getTopicName(), message, e.getMessage());
+            // Depending on requirements, you might want to send this to a DLQ or alert
+        } catch (Exception e) {
+            log.error("Error processing message for topic {}: {}", consumerConfig.getTopicName(), e.getMessage(), e);
+            // Re-throw or handle as per transaction management requirements
+            throw e;
+        }
+    }
+}
+
+package com.example.kafkaapp.service;
+
+import com.example.kafkaapp.config.KafkaProducerConfig;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.support.SendResult;
+import org.springframework.stereotype.Service;
+
+import java.util.concurrent.CompletableFuture;
+
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class KafkaProducerService {
+
+    private final KafkaProducerConfig kafkaProducerConfig; // Inject the config class
+
+    public CompletableFuture<SendResult<String, String>> sendMessage(String topic, String message) {
+        log.info("Attempting to send message to topic {}: {}", topic, message);
+
+        KafkaTemplate<String, String> kafkaTemplate;
+        try {
+            kafkaTemplate = kafkaProducerConfig.getKafkaTemplateForTopic(topic);
+        } catch (Exception e) {
+            log.error("Failed to get KafkaTemplate for topic {}: {}", topic, e.getMessage());
+            return CompletableFuture.failedFuture(e); // Return a failed future
+        }
+
+        CompletableFuture<SendResult<String, String>> future = kafkaTemplate.send(topic, message);
+
+        // Add a callback to log success/failure
+        future.whenComplete((result, ex) -> {
+            if (ex == null) {
+                log.info("Message sent successfully to topic {}: partition={}, offset={}",
+                         topic, result.getRecordMetadata().partition(), result.getRecordMetadata().offset());
+            } else {
+                log.error("Failed to send message to topic {}: {}", topic, ex.getMessage(), ex);
+            }
+        });
+
+        return future;
+    }
+}
+
+
+package com.example.kafkaapp.service;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class PostgresProcessorService {
+
+    private final JdbcTemplate jdbcTemplate;
+
+    /**
+     * Calls a PostgreSQL stored function with a single BIGINT parameter.
+     * @param functionName The name of the PostgreSQL function.
+     * @param msgId The BIGINT parameter to pass to the function.
+     */
+    public void callStoredFunction(String functionName, Long msgId) {
+        try {
+            String sql = "SELECT " + functionName + "(?)";
+            jdbcTemplate.queryForObject(sql, Void.class, msgId);
+            log.info("Successfully called PostgreSQL function {} with msg_id {}", functionName, msgId);
+        } catch (Exception e) {
+            log.error("Error calling PostgreSQL function {} with msg_id {}: {}", functionName, msgId, e.getMessage(), e);
+            throw new RuntimeException("Failed to call PostgreSQL function: " + functionName, e);
+        }
+    }
+}
+
+
+package com.example.kafkaapp.controller;
+
+import com.example.kafkaapp.config.ApplicationReadyEventConsumerStarter;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/admin/kafka")
+@RequiredArgsConstructor
+@Slf4j
+public class AdminController {
+
+    private final ApplicationReadyEventConsumerStarter consumerStarter;
+
+    @PostMapping("/consumers/refresh")
+    public ResponseEntity<String> refreshConsumers() {
+        log.info("Received request to refresh Kafka consumers.");
+        try {
+            consumerStarter.refreshDynamicConsumers();
+            return ResponseEntity.ok("Kafka consumers refresh initiated successfully.");
+        } catch (Exception e) {
+            log.error("Error during Kafka consumer refresh: {}", e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                                 .body("Failed to refresh Kafka consumers: " + e.getMessage());
+        }
+    }
+}
+
+
+
+package com.example.kafkaapp.controller;
+
+import com.example.kafkaapp.service.KafkaProducerService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/kafka/producer")
+@RequiredArgsConstructor
+@Slf4j
+public class ProducerController {
+
+    private final KafkaProducerService kafkaProducerService;
+
+    @PostMapping("/send/{topic}")
+    public ResponseEntity<String> sendMessage(@PathVariable String topic, @RequestBody String message) {
+        log.info("Received request to send message to topic: {}", topic);
+        try {
+            kafkaProducerService.sendMessage(topic, message);
+            return ResponseEntity.ok("Message sent to Kafka topic: " + topic);
+        } catch (Exception e) {
+            log.error("Error sending message to Kafka topic {}: {}", topic, e.getMessage(), e);
+            return ResponseEntity.internalServerError().body("Failed to send message: " + e.getMessage());
+        }
+    }
+}
